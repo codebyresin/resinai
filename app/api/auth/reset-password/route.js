@@ -1,37 +1,25 @@
-import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
 
 import { pool } from "@/lib/mysql";
 
-interface VerifyCodeBody {
-  email: string;
-  code: string;
-}
-
-interface CodeRow {
-  id: number;
-  email: string;
-  code: string;
-  expires_at: Date;
-  used: number;
-}
-
-export async function POST(request: NextRequest) {
+export async function POST(request) {
   try {
-    const body = (await request.json()) as VerifyCodeBody;
+    const body = await request.json();
     const email = body.email?.trim().toLowerCase();
     const code = body.code?.trim();
+    const newPassword = body.newPassword;
 
-    if (!email || !code) {
+    if (!email || !code || !newPassword) {
       return NextResponse.json(
-        { message: "邮箱和验证码不能为空。" },
+        { message: "邮箱、验证码和新密码不能为空。" },
         { status: 400 },
       );
     }
 
-    const [rows] = await pool.execute<CodeRow[]>(
+    const [rows] = await pool.execute(
       `SELECT id, email, code, expires_at, used
-       FROM email_login_codes
+       FROM password_reset_codes
        WHERE email = ? AND code = ?
        ORDER BY id DESC
        LIMIT 1`,
@@ -41,10 +29,7 @@ export async function POST(request: NextRequest) {
     const record = rows[0];
 
     if (!record) {
-      return NextResponse.json(
-        { message: "验证码不正确。" },
-        { status: 401 },
-      );
+      return NextResponse.json({ message: "验证码不正确。" }, { status: 401 });
     }
 
     if (record.used) {
@@ -61,24 +46,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await pool.execute(`UPDATE email_login_codes SET used = 1 WHERE id = ?`, [
-      record.id,
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await pool.execute(`UPDATE users SET password_hash = ? WHERE email = ?`, [
+      passwordHash,
+      email,
     ]);
 
-    // TODO: 在这里设置登录态（Cookie / Session / JWT）
+    await pool.execute(
+      `UPDATE password_reset_codes SET used = 1 WHERE id = ?`,
+      [record.id],
+    );
+
     return NextResponse.json(
-      {
-        message: "登录成功。",
-        email,
-      },
+      { message: "密码已重置，请使用新密码登录。" },
       { status: 200 },
     );
   } catch (error) {
-    console.error("Verify code error:", error);
+    console.error("Reset password error:", error);
     return NextResponse.json(
-      { message: "验证失败，请稍后重试。" },
+      { message: "重置密码失败，请稍后重试。" },
       { status: 500 },
     );
   }
 }
-

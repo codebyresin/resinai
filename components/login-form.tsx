@@ -1,7 +1,15 @@
- "use client";
+/**
+ * 登录 / 注册表单。
+ *
+ * - QQ 邮箱 + 密码登录
+ * - QQ 邮箱 + 验证码注册
+ * - “记住邮箱”功能（localStorage）
+ */
+"use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -11,7 +19,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@/components/ui/card";
 import {
   Field,
   FieldDescription,
@@ -23,224 +31,414 @@ import { Input } from "@/components/ui/input";
 
 type LoginFormProps = React.ComponentProps<"div">;
 
+interface ApiMessageResponse {
+  message: string;
+}
+
+type ActiveTab = "login" | "register";
+
+const REMEMBER_KEY_EMAIL = "resinai_login_email";
+const REMEMBER_KEY_FLAG = "resinai_login_remember";
+
+/**
+ * 验证是否为 QQ 邮箱。
+ */
+function isQqEmail(value: string): boolean {
+  const trimmed = value.trim().toLowerCase();
+  return /^[1-9][0-9]{4,10}@qq\.com$/.test(trimmed);
+}
+
 export function LoginForm({ className, ...props }: LoginFormProps) {
   const router = useRouter();
-  const [email, setEmail] = useState<string>(""); // 邮箱输入值
-  const [password, setPassword] = useState<string>(""); // 密码输入值（密码登录）
-  const [code, setCode] = useState<string>(""); // 验证码输入值（邮箱验证码登录）
-  const [loadingPassword, setLoadingPassword] = useState<boolean>(false); // 密码登录加载状态
-  const [loadingCode, setLoadingCode] = useState<boolean>(false); // 验证码登录加载状态
-  const [sendingCode, setSendingCode] = useState<boolean>(false); // 发送验证码按钮加载状态
-  const [error, setError] = useState<string | null>(null); // 错误信息
-  const [info, setInfo] = useState<string | null>(null); // 成功提示信息（如验证码已发送）
 
-  async function handlePasswordLogin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); // 阻止表单默认刷新行为（密码登录）
-    setError(null); // 清空之前的错误
-    setInfo(null); // 清空提示信息
-    setLoadingPassword(true); // 开始密码登录加载
+  const [activeTab, setActiveTab] = useState<ActiveTab>("login");
+
+  const [email, setEmail] = useState<string>("");
+  const [password, setPassword] = useState<string>("");
+  const [confirmPassword, setConfirmPassword] = useState<string>("");
+  const [registerCode, setRegisterCode] = useState<string>("");
+
+  const [rememberEmail, setRememberEmail] = useState<boolean>(true);
+
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [sendingRegisterCode, setSendingRegisterCode] = useState<boolean>(false);
+  const [registerCodeCountdown, setRegisterCodeCountdown] = useState<number>(0);
+
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const rememberFlag = localStorage.getItem(REMEMBER_KEY_FLAG);
+      const savedEmail = localStorage.getItem(REMEMBER_KEY_EMAIL);
+      if (rememberFlag === "1" && savedEmail) {
+        setRememberEmail(true);
+        setEmail(savedEmail);
+      }
+    } catch {
+      // [Design] localStorage 访问异常时静默失败
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!registerCodeCountdown) return;
+    const timer = window.setInterval(() => {
+      setRegisterCodeCountdown((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [registerCodeCountdown]);
+
+  function rememberEmailIfNeeded(currentEmail: string, enabled: boolean) {
+    try {
+      if (enabled) {
+        localStorage.setItem(REMEMBER_KEY_EMAIL, currentEmail);
+        localStorage.setItem(REMEMBER_KEY_FLAG, "1");
+      } else {
+        localStorage.removeItem(REMEMBER_KEY_EMAIL);
+        localStorage.removeItem(REMEMBER_KEY_FLAG);
+      }
+    } catch {
+      // [Design] 非关键逻辑，失败时忽略
+    }
+  }
+
+  async function handleLoginSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setInfo(null);
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!isQqEmail(trimmedEmail)) {
+      setError("请输入有效的 QQ 邮箱地址，例如 123456@qq.com。");
+      return;
+    }
+    if (!password) {
+      setError("密码不能为空。");
+      return;
+    }
+
+    setSubmitting(true);
     try {
       const response = await fetch("/api/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ email, password }),
+        credentials: "include",
+        body: JSON.stringify({
+          email: trimmedEmail,
+          password,
+        }),
       });
 
+      const data = (await response.json().catch(() => null)) as
+        | ApiMessageResponse
+        | null;
+
       if (!response.ok) {
-        const data = await response.json().catch(() => null);
         setError(data?.message ?? "登录失败，请检查邮箱或密码。");
         return;
       }
 
-      // 登录成功，这里先简单跳转到首页或 dashboard
-      router.push("/"); // TODO: 后续可以改为 /dashboard 等业务首页
-    } catch (err) {
+      rememberEmailIfNeeded(trimmedEmail, rememberEmail);
+      router.push("/");
+    } catch {
       setError("网络异常，请稍后重试。");
     } finally {
-      setLoadingPassword(false); // 结束密码登录加载
+      setSubmitting(false);
     }
   }
 
-  async function handleSendCode() {
-    if (!email) {
-      setError("请先输入邮箱，再获取验证码。");
+  async function handleSendRegisterCode() {
+    setError(null);
+    setInfo(null);
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!isQqEmail(trimmedEmail)) {
+      setError("请输入有效的 QQ 邮箱地址，例如 123456@qq.com。");
       return;
     }
-    setError(null); // 清空错误
-    setInfo(null); // 清空提示
-    setSendingCode(true); // 开始发送验证码加载
+
+    setSendingRegisterCode(true);
     try {
       const response = await fetch("/api/auth/send-code", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: trimmedEmail }),
       });
 
-      const data = await response.json().catch(() => null);
+      const data = (await response.json().catch(() => null)) as
+        | ApiMessageResponse
+        | null;
+
       if (!response.ok) {
         setError(data?.message ?? "发送验证码失败，请稍后重试。");
         return;
       }
 
-      setInfo(data?.message ?? "验证码已发送，请查收邮箱。");
-    } catch (err) {
+      setInfo(data?.message ?? "验证码已发送，请在 5 分钟内完成注册。");
+      setRegisterCodeCountdown(60);
+    } catch {
       setError("发送验证码失败，请检查网络后重试。");
     } finally {
-      setSendingCode(false); // 结束发送验证码加载
+      setSendingRegisterCode(false);
     }
   }
 
-  async function handleCodeLogin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); // 阻止验证码登录表单默认行为
+  async function handleRegisterSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setError(null);
     setInfo(null);
-    setLoadingCode(true); // 开始验证码登录加载
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!isQqEmail(trimmedEmail)) {
+      setError("请输入有效的 QQ 邮箱地址，例如 123456@qq.com。");
+      return;
+    }
+    if (!password || !confirmPassword) {
+      setError("密码和确认密码不能为空。");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("两次输入的密码不一致。");
+      return;
+    }
+    if (password.length < 6) {
+      setError("密码长度至少为 6 位。");
+      return;
+    }
+    if (!registerCode.trim()) {
+      setError("请先获取并填写邮箱验证码。");
+      return;
+    }
+
+    setSubmitting(true);
     try {
-      const response = await fetch("/api/auth/verify-code", {
+      const response = await fetch("/api/auth/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({
+          email: trimmedEmail,
+          password,
+          code: registerCode.trim(),
+        }),
       });
 
-      const data = await response.json().catch(() => null);
+      const data = (await response.json().catch(() => null)) as
+        | ApiMessageResponse
+        | null;
+
       if (!response.ok) {
-        setError(data?.message ?? "验证码登录失败，请重试。");
+        setError(data?.message ?? "注册失败，请稍后重试。");
         return;
       }
 
-      // 验证码登录成功
-      setInfo(data?.message ?? "登录成功。");
-      router.push("/");
-    } catch (err) {
-      setError("验证码登录失败，请稍后重试。");
+      setInfo(data?.message ?? "注册成功，请使用该账号登录。");
+      setActiveTab("login");
+      setRegisterCode("");
+      setConfirmPassword("");
+    } catch {
+      setError("注册失败，请稍后重试。");
     } finally {
-      setLoadingCode(false); // 结束验证码登录加载
+      setSubmitting(false);
     }
   }
 
+  const isLogin = activeTab === "login";
+
   return (
-    <div className={cn("flex flex-col gap-6", className)} {...props}>
+    <div className={cn("flex flex-col gap-4", className)} {...props}>
       <Card>
-        <CardHeader className="text-center">
-          <CardTitle className="text-xl">Welcome back</CardTitle>
+        <CardHeader className="text-center space-y-1">
+          <CardTitle className="text-xl">
+            {isLogin ? "登录 Resin AI 账号" : "注册 Resin AI 账号"}
+          </CardTitle>
           <CardDescription>
-            Login with your Apple or Google account
+            使用 QQ 邮箱登录，体验流式 AI 对话与多模态能力。
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handlePasswordLogin}>
-            <FieldGroup>
-              <Field>
-                <Button variant="outline" type="button">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                    <path
-                      d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
-                      fill="currentColor"
-                    />
-                  </svg>
-                  Login with Apple
-                </Button>
-                <Button variant="outline" type="button">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                    <path
-                      d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"
-                      fill="currentColor"
-                    />
-                  </svg>
-                  Login with Google
-                </Button>
-              </Field>
-              <FieldSeparator className="*:data-[slot=field-separator-content]:bg-card">
-                Or continue with
-              </FieldSeparator>
-              <Field>
-                <FieldLabel htmlFor="email">Email</FieldLabel>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="m@example.com"
-                  required
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </Field>
-              <Field>
-                <div className="flex items-center">
-                  <FieldLabel htmlFor="password">Password</FieldLabel>
-                  <a
-                    href="#"
-                    className="ml-auto text-sm underline-offset-4 hover:underline"
-                  >
-                    Forgot your password?
-                  </a>
-                </div>
-                <Input
-                  id="password"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-              </Field>
-              <Field>
-                <Button type="submit" disabled={loadingPassword}>
-                  {loadingPassword ? "Logging in..." : "密码登录"}
-                </Button>
-                <FieldDescription className="text-center">
-                  Don&apos;t have an account? <a href="#">Sign up</a>
-                </FieldDescription>
-              </Field>
-            </FieldGroup>
-          </form>
+          <div className="mb-4 flex rounded-md bg-muted p-1 text-sm">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("login");
+                setError(null);
+                setInfo(null);
+              }}
+              className={cn(
+                "flex-1 rounded-sm px-3 py-1.5 transition",
+                isLogin
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground",
+              )}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab("register");
+                setError(null);
+                setInfo(null);
+              }}
+              className={cn(
+                "flex-1 rounded-sm px-3 py-1.5 transition",
+                !isLogin
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground",
+              )}
+            >
+              注册
+            </button>
+          </div>
 
-          <div className="mt-6 border-t pt-6">
-            <form onSubmit={handleCodeLogin} className="space-y-4">
+          {isLogin ? (
+            <form onSubmit={handleLoginSubmit}>
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="code-email">Email（邮箱验证码登录）</FieldLabel>
+                  <FieldLabel htmlFor="login-email">QQ 邮箱</FieldLabel>
                   <Input
-                    id="code-email"
+                    id="login-email"
                     type="email"
-                    placeholder="m@example.com"
+                    placeholder="123456@qq.com"
                     required
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                   />
                 </Field>
                 <Field>
-                  <div className="flex gap-2">
-                    <Input
-                      id="code"
-                      type="text"
-                      placeholder="输入 6 位验证码"
-                      required
-                      value={code}
-                      onChange={(event) => setCode(event.target.value)}
+                  <FieldLabel htmlFor="login-password">密码</FieldLabel>
+                  <Input
+                    id="login-password"
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                  />
+                </Field>
+                <Field className="flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="size-3 accent-primary"
+                      checked={rememberEmail}
+                      onChange={(event) =>
+                        setRememberEmail(event.target.checked)
+                      }
                     />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleSendCode}
-                      disabled={sendingCode}
-                    >
-                      {sendingCode ? "发送中..." : "获取验证码"}
-                    </Button>
-                  </div>
+                    <span>记住邮箱（下次自动填充）</span>
+                  </label>
+                  <Link
+                    href="/forgot-password"
+                    className="text-xs underline-offset-4 hover:underline"
+                  >
+                    忘记密码？
+                  </Link>
                 </Field>
                 <Field>
-                  <Button type="submit" disabled={loadingCode}>
-                    {loadingCode ? "登录中..." : "验证码登录"}
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={submitting}
+                  >
+                    {submitting ? "登录中..." : "登录"}
                   </Button>
                 </Field>
               </FieldGroup>
             </form>
-          </div>
+          ) : (
+            <form onSubmit={handleRegisterSubmit}>
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="register-email">QQ 邮箱</FieldLabel>
+                  <Input
+                    id="register-email"
+                    type="email"
+                    placeholder="123456@qq.com"
+                    required
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="register-code">邮箱验证码</FieldLabel>
+                  <div className="flex gap-2">
+                    <Input
+                      id="register-code"
+                      type="text"
+                      placeholder="请输入 6 位验证码"
+                      required
+                      value={registerCode}
+                      onChange={(event) => setRegisterCode(event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="whitespace-nowrap"
+                      disabled={sendingRegisterCode || registerCodeCountdown > 0}
+                      onClick={handleSendRegisterCode}
+                    >
+                      {registerCodeCountdown > 0
+                        ? `重新获取 (${registerCodeCountdown}s)`
+                        : sendingRegisterCode
+                        ? "发送中..."
+                        : "获取验证码"}
+                    </Button>
+                  </div>
+                  <FieldDescription>
+                    验证码将通过 QQ 邮箱发送，5 分钟内有效。
+                  </FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="register-password">密码</FieldLabel>
+                  <Input
+                    id="register-password"
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="register-confirm-password">
+                    确认密码
+                  </FieldLabel>
+                  <Input
+                    id="register-confirm-password"
+                    type="password"
+                    required
+                    value={confirmPassword}
+                    onChange={(event) =>
+                      setConfirmPassword(event.target.value)
+                    }
+                  />
+                </Field>
+                <Field>
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={submitting}
+                  >
+                    {submitting ? "注册中..." : "注册并登录"}
+                  </Button>
+                  <FieldDescription className="text-center">
+                    注册即表示你同意我们的服务条款和隐私政策。
+                  </FieldDescription>
+                </Field>
+              </FieldGroup>
+            </form>
+          )}
 
           {(error || info) && (
             <div className="mt-4 space-y-1 text-center text-sm">
@@ -254,9 +452,8 @@ export function LoginForm({ className, ...props }: LoginFormProps) {
           )}
         </CardContent>
       </Card>
-      <FieldDescription className="px-6 text-center">
-        By clicking continue, you agree to our <a href="#">Terms of Service</a>{" "}
-        and <a href="#">Privacy Policy</a>.
+      <FieldDescription className="px-6 text-center text-xs text-muted-foreground">
+        登录完成后即可开始使用 Resin AI 进行对话与多模态创作。
       </FieldDescription>
     </div>
   );

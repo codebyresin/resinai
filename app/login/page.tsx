@@ -1,8 +1,14 @@
+/**
+ * 登录 / 注册页面。
+ *
+ * 使用 QQ 邮箱登录 Resin AI。
+ */
 "use client";
 
-import { LoginForm } from "@/components/login-form";
-import { GalleryVerticalEndIcon } from "lucide-react";
 import Link from "next/link";
+import { GalleryVerticalEndIcon } from "lucide-react";
+
+import { LoginForm } from "@/components/login-form";
 
 export default function LoginPage() {
   return (
@@ -15,10 +21,12 @@ export default function LoginPage() {
           <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <GalleryVerticalEndIcon className="size-4" />
           </div>
-          Resin Ai小助手
+          Resin AI 小助手
         </Link>
+
         <LoginForm />
       </div>
     </div>
   );
 }
+
